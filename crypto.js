@@ -34,11 +34,12 @@ export async function deriveRaw(pass, salt, iterations) {
 
 export const importRaw = (raw) => crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']);
 
-// Aus dem Geheimnis des Sensors wird der Schlüssel, der den Tagebuch-Schlüssel einpackt.
-export async function prfKey(output) {
-  const base = await crypto.subtle.importKey('raw', output, 'HKDF', false, ['deriveKey']);
+// Macht aus einem Zufallsgeheimnis (Sensor, Wiederherstellungsschlüssel) einen Schlüssel zum Einpacken.
+// Kein langsames PBKDF2 nötig: Diese Geheimnisse haben genug Zufall und sind nicht erratbar.
+export async function hkdfKey(secret, info) {
+  const base = await crypto.subtle.importKey('raw', secret, 'HKDF', false, ['deriveKey']);
   return crypto.subtle.deriveKey(
-    { name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(32), info: enc.encode('tend-biometric-unlock') },
+    { name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(32), info: enc.encode(info) },
     base,
     { name: 'AES-GCM', length: 256 },
     false,

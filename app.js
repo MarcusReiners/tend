@@ -60,15 +60,21 @@ function vLock() {
       <p id="lockErr" class="small" style="color:var(--danger);min-height:1.2em" role="alert"></p>
       <button class="btn ${state.bioOn && state.bioAvail ? 'ghost' : ''} block" type="submit">${first ? 'Tagebuch anlegen' : 'Öffnen'}</button>
     </form>
-    ${first ? '<p class="small soft">Ohne Passphrase gibt es keine Wiederherstellung – auch nicht durch uns. Das ist der Preis echter Privatsphäre. Mindestens 8 Zeichen; ein ganzer Satz ist am besten.</p>' : ''}
+    ${first ? '<p class="small soft">Mindestens 8 Zeichen, ein ganzer Satz ist am besten. Niemand außer dir kann sie zurückholen. Als Nächstes bekommst du dafür einen Wiederherstellungsschlüssel.</p>' : ''}
     <button class="btn ghost" data-a="help">Ich brauche gerade Hilfe</button>
-    ${first ? '' : '<div><button class="link-btn" data-a="forgot">Passphrase vergessen?</button></div>'}
+    <div><button class="link-btn" data-a="${first ? 'restoreStart' : 'forgot'}">${first ? 'Aus Sicherung wiederherstellen' : 'Passphrase vergessen?'}</button></div>
   </div>`;
 }
 
 function greeting() {
   const h = new Date().getHours();
   return h < 11 ? 'Guten Morgen' : h < 18 ? 'Hallo' : 'Guten Abend';
+}
+
+// Dezente Erinnerung: nur wenn es neue Einträge gibt und die letzte Sicherung zwei Wochen zurückliegt.
+function backupDue() {
+  const last = state.settings.lastBackupAt || 0;
+  return Date.now() - last > 14 * 86400000 && state.entries.some((e) => e.createdAt > last);
 }
 
 function vHome() {
@@ -83,6 +89,8 @@ function vHome() {
     <button class="btn" data-a="write">${icon('pen')}Ins Tagebuch schreiben</button>
   </div>
   <div class="navcards"><button class="navcard sage" data-a="tree">${icon('tree')}Dein Baum</button><button class="navcard blue" data-a="therapy">${icon('talk')}Therapie</button></div>
+  ${!state.hasRec ? '<button class="prompt blue" data-a="newCode"><span class="tag">Für den Fall der Fälle</span><div class="q">Wiederherstellungsschlüssel einrichten</div></button>' : ''}
+  ${backupDue() ? '<button class="prompt" data-a="backup"><span class="tag">Neue Einträge seit der letzten Sicherung</span><div class="q">Sicherung erstellen</div></button>' : ''}
   ${!isConnected(state.settings) ? (canGoogle() ? '<button class="prompt blue" data-a="googleConnect"><span class="tag">Begleitung einrichten</span><div class="q">Mit Google anmelden</div></button><div class="center"><button class="link-btn" data-a="settings">Andere Möglichkeiten</button></div>' : '<button class="prompt blue" data-a="setupAi"><span class="tag">Optional</span><div class="q">Begleitung einrichten</div></button>') : ''}
   <button class="prompt" data-a="promptWrite"><span class="tag">Impuls für heute</span><div class="q">${esc(dailyPrompt())}</div></button>
   ${state.entries.length ? `<div class="sep"></div><h3 class="soft">Deine letzten Wochen</h3><div class="strip" aria-label="Farbpunkte der letzten 28 Tage">${weekStrip(state.entries)}</div>
@@ -225,6 +233,54 @@ function connectedBlock(s) {
     <div id="testOut" class="small soft" role="status" style="margin-top:8px">${esc(state.testMsg)}</div>`;
 }
 
+const authField = () => `<input type="password" id="authPw" placeholder="Aktuelle Passphrase" autocomplete="current-password"${state.bioOn && state.bioAvail ? '' : ' required'}>
+  ${state.bioOn && state.bioAvail ? '<p class="small soft" style="margin:0">Leer lassen, um dich stattdessen mit dem Fingerabdruck auszuweisen.</p>' : ''}`;
+
+const authHtml = (id, title, text, fields, label) => `<h2>${title}</h2><p class="soft">${text}</p>
+  <form id="${id}" class="stack" autocomplete="off">${authField()}${fields}<p id="authErr" class="small" style="color:var(--danger);margin:0" role="alert"></p>
+  <div class="row"><button class="btn" type="submit">${label}</button><button class="btn ghost" type="button" data-a="closeModal">Abbrechen</button></div></form>`;
+
+function restoreHtml(merge) {
+  return `<h2>${merge ? 'Sicherung einlesen' : 'Aus Sicherung wiederherstellen'}</h2>
+  <p class="soft">${merge ? 'Neue Einträge aus der Sicherung kommen dazu, vorhandene bleiben unverändert.' : 'Dein Tagebuch wird aus der Datei wiederhergestellt.'} Nutze die Passphrase oder den Wiederherstellungsschlüssel, die beim Erstellen der Sicherung galten.</p>
+  <form id="${merge ? 'mergeForm' : 'restoreForm'}" class="stack" autocomplete="off"><input type="file" id="bkFile" accept=".json,application/json" required aria-label="Sicherungsdatei">
+  <input type="password" id="bkSecret" placeholder="Passphrase oder Wiederherstellungsschlüssel" required>
+  <p id="bkErr" class="small" style="color:var(--danger);margin:0" role="alert"></p>
+  <div class="row"><button class="btn" type="submit">${merge ? 'Einlesen' : 'Wiederherstellen'}</button><button class="btn ghost" type="button" data-a="closeModal">Abbrechen</button></div></form>`;
+}
+
+// Zeigt den Schlüssel genau einmal. Bis zur Bestätigung sperrt Tend sich nicht von selbst.
+function showCode(code) {
+  state.code = code;
+  state.noLock = true;
+  showModal(`<h2>Dein Wiederherstellungsschlüssel</h2><p>Damit setzt du eine neue Passphrase, falls du sie vergisst. Tend zeigt ihn nur dieses eine Mal.</p>
+  <div class="code-box">${esc(code)}</div>
+  <div class="row" style="margin:12px 0"><button class="btn ghost" data-a="codeCopy">Kopieren</button><button class="btn ghost" data-a="codeSave">Als Datei speichern</button></div>
+  <p class="small soft">Bewahre ihn getrennt vom Handy auf, am besten ausgedruckt oder im Passwortmanager. Wer ihn hat und an dein Gerät oder eine Sicherung kommt, kann dein Tagebuch öffnen.</p>
+  <label class="check"><input type="checkbox" id="codeOk"><span>Ich habe ihn sicher aufbewahrt.</span></label>
+  <p id="codeErr" class="small" style="color:var(--danger);margin:8px 0 0" role="alert"></p>
+  <button class="btn block" style="margin-top:12px" data-a="codeDone">Fertig</button>`);
+}
+
+// Android bietet über "Teilen" direkt Drive & Co. an; sonst normaler Download. Gibt false zurück, wenn abgebrochen.
+async function saveFile(name, text, type) {
+  const file = new File([text], name, { type });
+  if (navigator.canShare?.({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file], title: name });
+      return true;
+    } catch (err) {
+      if (err.name === 'AbortError') return false;
+    }
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(file);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  return true;
+}
+
 function vSettings() {
   const s = state.settings;
   const p = PROVIDERS[s.provider];
@@ -258,6 +314,13 @@ function vSettings() {
     <p class="small soft">Alle Einträge, Entwürfe und dein API-Schlüssel sind mit AES-256 verschlüsselt (Schlüssel aus deiner Passphrase, PBKDF2 mit 600.000 Runden). Es gibt keine Konten, keine Analyse und keinen Server.</p>
   </div>
   <button class="btn block" data-a="saveSettings">Speichern</button>
+  <div class="card stack"><h3>Passphrase</h3>
+    <div class="row"><button class="btn ghost" data-a="changePw">Passphrase ändern</button><button class="btn ghost" data-a="newCode">${state.hasRec ? 'Neuer Wiederherstellungsschlüssel' : 'Wiederherstellungsschlüssel einrichten'}</button></div>
+  </div>
+  <div class="card stack"><h3>Sicherung</h3>
+    <p class="small soft" style="margin:0">Die Datei bleibt verschlüsselt, du kannst sie also auch in deinem Cloud-Speicher ablegen. ${s.lastBackupAt ? `Letzte Sicherung: ${fmt(s.lastBackupAt)}.` : 'Noch keine Sicherung erstellt.'}</p>
+    <div class="row"><button class="btn" data-a="backup">Sicherung erstellen</button><button class="btn ghost" data-a="importStart">Sicherung einlesen</button></div>
+  </div>
   <div class="card stack"><h3>Deine Daten</h3>
     <button class="btn ghost" data-a="export">Alles exportieren (unverschlüsselt)</button>
     <button class="btn danger" data-a="wipe">Alles unwiderruflich löschen</button>
@@ -266,6 +329,7 @@ function vSettings() {
 
 /* ---------- Ablauf ---------- */
 async function enter() {
+  state.hasRec = await vault.hasRecovery();
   state.settings = { ...DEFAULTS, ...(await vault.getSecret('settings')) };
   const s = state.settings; // Ältere Einstellungen kennen connectedAt noch nicht: gewähltes Modell oder Einwilligung zeigen eine geprüfte Verbindung.
   if (!s.connectedAt && s.provider !== 'off' && (s.consent === `${s.provider}|${s.base}` || s.model !== PROVIDERS[s.provider].model)) s.connectedAt = Date.now();
@@ -530,11 +594,43 @@ const actions = {
     el.textContent = show ? 'Verbergen' : 'Anzeigen';
   },
   forgot: async () => {
-    const n = await vault.countItems();
-    showModal(`<h2>Passphrase vergessen?</h2><p>Deine Einträge sind mit der Passphrase verschlüsselt. Ohne sie kann niemand sie öffnen, auch wir nicht.</p>
-    <p>Auf diesem Gerät ${n === 1 ? 'liegt <strong>1 gespeicherter Eintrag</strong>' : `liegen <strong>${n} gespeicherte Einträge</strong>`}.</p>
-    <p class="soft">Du kannst neu anfangen. Dabei wird alles auf diesem Gerät endgültig gelöscht. Tippe zur Bestätigung <strong>LÖSCHEN</strong>.</p>
-    <input type="text" id="wipeIn" autocomplete="off"><div class="row" style="margin-top:12px"><button class="btn danger" data-a="wipeYes">Alles löschen und neu anfangen</button><button class="btn ghost" data-a="closeModal">Abbrechen</button></div>`);
+    const [n, rec] = await Promise.all([vault.countItems(), vault.hasRecovery()]);
+    showModal(`<h2>Passphrase vergessen?</h2><p class="soft">Die Passphrase ist nirgends gespeichert, auch nicht bei uns. Du kannst aber eine neue setzen.</p>
+    ${state.bioOn && state.bioAvail ? `<div class="card stack"><h3>Mit Fingerabdruck</h3><p class="small soft" style="margin:0">Öffne Tend und ändere die Passphrase dann in den Einstellungen.</p><button class="btn block" data-a="forgotBio">${icon('finger')}Mit Fingerabdruck öffnen</button></div>` : ''}
+    ${rec ? `<form id="recoverForm" class="card stack" autocomplete="off" style="margin-top:12px"><h3>Mit Wiederherstellungsschlüssel</h3>
+      <input type="text" id="recCode" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX" autocapitalize="characters" spellcheck="false" required>
+      <input type="password" id="recPw" placeholder="Neue Passphrase" autocomplete="new-password" required>
+      <input type="password" id="recPw2" placeholder="Neue Passphrase wiederholen" autocomplete="new-password" required>
+      <p id="recErr" class="small" style="color:var(--danger);margin:0" role="alert"></p>
+      <button class="btn block" type="submit">Neue Passphrase setzen</button></form>` : '<p class="small soft">Für dieses Tagebuch gibt es keinen Wiederherstellungsschlüssel.</p>'}
+    <details style="margin-top:14px"><summary class="soft">Nichts davon vorhanden</summary><div class="stack" style="margin-top:8px"><p class="small">Dann bleiben die Einträge verschlüsselt, und du kannst nur neu anfangen. Auf diesem Gerät ${n === 1 ? 'liegt <strong>1 gespeicherter Eintrag</strong>' : `liegen <strong>${n} gespeicherte Einträge</strong>`}, sie würden endgültig gelöscht. Tippe zur Bestätigung <strong>LÖSCHEN</strong>.</p>
+    <input type="text" id="wipeIn" autocomplete="off"><button class="btn danger block" data-a="wipeYes">Alles löschen und neu anfangen</button></div></details>
+    <button class="btn ghost block" style="margin-top:12px" data-a="closeModal">Abbrechen</button>`);
+  },
+  forgotBio: () => { closeModal(); tryBio(true); },
+  restoreStart: () => showModal(restoreHtml(false)),
+  importStart: () => showModal(restoreHtml(true)),
+  backup: async () => {
+    const b = await vault.makeBackup();
+    state.settings.lastBackupAt = b.createdAt;
+    await vault.setSecret('settings', state.settings);
+    state.noLock = true;
+    const ok = await saveFile(`tend-sicherung-${new Date(b.createdAt).toISOString().slice(0, 10)}.json`, JSON.stringify(b), 'application/json');
+    state.noLock = false;
+    if (ok) toast('Sicherung erstellt');
+    render();
+  },
+  changePw: () => showModal(authHtml('pwForm', 'Passphrase ändern', 'Deine Einträge bleiben unverändert. Ältere Sicherungen öffnest du weiter mit der Passphrase von damals.', `<input type="password" id="pwNew" placeholder="Neue Passphrase" autocomplete="new-password" required><input type="password" id="pwNew2" placeholder="Neue Passphrase wiederholen" autocomplete="new-password" required>`, 'Passphrase ändern')),
+  newCode: () => showModal(authHtml('codeForm', 'Wiederherstellungsschlüssel', 'Du bekommst einen neuen Schlüssel, der alte gilt dann auf diesem Gerät nicht mehr. Ältere Sicherungen öffnest du weiter mit dem Schlüssel von damals.', '', 'Neuen Schlüssel erstellen')),
+  codeCopy: async () => { try { await navigator.clipboard.writeText(state.code); toast('Kopiert'); } catch { toast('Kopieren nicht möglich, bitte abschreiben.'); } },
+  codeSave: async () => { await saveFile('tend-wiederherstellungsschluessel.txt', `Tend Wiederherstellungsschlüssel\n\n${state.code}\n\nGut aufbewahren. Damit lässt sich dein Tagebuch öffnen.\n`, 'text/plain'); },
+  codeDone: () => {
+    if (!$('#codeOk').checked) { $('#codeErr').textContent = 'Bitte bestätige, dass du ihn sicher aufbewahrt hast.'; return; }
+    state.code = '';
+    state.noLock = false;
+    state.hasRec = true;
+    closeModal();
+    render();
   },
   closeModal,
   lock: lockApp,
@@ -685,6 +781,7 @@ const actions = {
   wipe: () => showModal(`<h2>Alles löschen?</h2><p class="soft">Alle Einträge, Einstellungen und der Schlüssel werden von diesem Gerät entfernt. Das lässt sich nicht rückgängig machen. Tippe zur Bestätigung <strong>LÖSCHEN</strong>.</p><input type="text" id="wipeIn" autocomplete="off"><div class="row" style="margin-top:12px"><button class="btn danger" data-a="wipeYes">Endgültig löschen</button><button class="btn ghost" data-a="closeModal">Abbrechen</button></div>`),
   wipeYes: async () => {
     if ($('#wipeIn').value.trim() !== 'LÖSCHEN') return;
+    state.hasRec = false;
     await vault.wipe();
     state.hasVault = false;
     state.bioOn = false;
@@ -732,15 +829,92 @@ document.addEventListener('submit', async (ev) => {
       if (pw.length < 8) { err.textContent = 'Bitte mindestens 8 Zeichen.'; return; }
       if (pw !== $('#pw2').value) { err.textContent = 'Die beiden Eingaben stimmen nicht überein.'; return; }
       btn.disabled = true; btn.textContent = 'Wird verschlüsselt…';
-      await vault.createVault(pw);
+      const code = await vault.createVault(pw);
       state.hasVault = true;
-      return enter();
+      await enter();
+      showCode(code);
+      return;
     }
     btn.disabled = true; btn.textContent = 'Wird entschlüsselt…';
     if (await vault.unlock(pw)) return enter();
     err.textContent = 'Das war nicht die richtige Passphrase.';
     btn.disabled = false; btn.textContent = 'Öffnen';
     ev.target.classList.remove('shake'); void ev.target.offsetWidth; ev.target.classList.add('shake');
+  }
+  if (ev.target.id === 'recoverForm') {
+    const err = $('#recErr');
+    const btn = ev.target.querySelector('button[type=submit]');
+    err.textContent = '';
+    if ($('#recPw').value.length < 8) { err.textContent = 'Die neue Passphrase braucht mindestens 8 Zeichen.'; return; }
+    if ($('#recPw').value !== $('#recPw2').value) { err.textContent = 'Die beiden neuen Passphrasen stimmen nicht überein.'; return; }
+    btn.disabled = true;
+    if (await vault.recoverWithCode($('#recCode').value, $('#recPw').value)) {
+      closeModal();
+      await enter();
+      toast('Neue Passphrase gesetzt');
+      return;
+    }
+    err.textContent = 'Dieser Schlüssel passt nicht. Prüfe, ob du ihn vollständig abgetippt hast.';
+    btn.disabled = false;
+  }
+  if (ev.target.id === 'pwForm' || ev.target.id === 'codeForm') {
+    const err = $('#authErr');
+    const btn = ev.target.querySelector('button[type=submit]');
+    err.textContent = '';
+    const isPw = ev.target.id === 'pwForm';
+    if (isPw && $('#pwNew').value.length < 8) { err.textContent = 'Die neue Passphrase braucht mindestens 8 Zeichen.'; return; }
+    if (isPw && $('#pwNew').value !== $('#pwNew2').value) { err.textContent = 'Die beiden neuen Passphrasen stimmen nicht überein.'; return; }
+    const auth = $('#authPw').value ? { pass: $('#authPw').value } : { bio: true };
+    btn.disabled = true;
+    state.bioBusy = true;
+    try {
+      if (isPw) {
+        if (await vault.changePassphrase(auth, $('#pwNew').value)) { closeModal(); toast('Passphrase geändert'); return; }
+      } else {
+        const code = await vault.newRecoveryCode(auth);
+        if (code) { closeModal(); showCode(code); return; }
+      }
+      err.textContent = 'Das war nicht die richtige Passphrase.';
+    } catch (e) {
+      err.textContent = e.name === 'NotAllowedError' || e.name === 'AbortError' ? 'Abgebrochen.' : 'Das hat nicht geklappt. Versuche es mit deiner Passphrase.';
+    } finally {
+      state.bioBusy = false;
+      btn.disabled = false;
+    }
+  }
+  if (ev.target.id === 'restoreForm' || ev.target.id === 'mergeForm') {
+    const err = $('#bkErr');
+    const btn = ev.target.querySelector('button[type=submit]');
+    err.textContent = '';
+    btn.disabled = true;
+    try {
+      let b;
+      try { b = JSON.parse(await $('#bkFile').files[0].text()); } catch { b = null; }
+      if (!vault.isBackup(b)) { err.textContent = 'Das ist keine Tend-Sicherung.'; return; }
+      const raw = await vault.openBackup(b, $('#bkSecret').value);
+      if (!raw) { err.textContent = 'Passphrase oder Schlüssel passen nicht zu dieser Sicherung.'; return; }
+      if (ev.target.id === 'restoreForm') {
+        await vault.adoptBackup(b, raw);
+        state.hasVault = true;
+        state.bioOn = false;
+        closeModal();
+        await enter();
+        toast(`${b.entries.length} ${b.entries.length === 1 ? 'Eintrag' : 'Einträge'} wiederhergestellt`);
+      } else {
+        const { added, skipped } = await vault.mergeBackup(b, raw);
+        const all = await vault.listEntries();
+        state.entries = all.filter((x) => !x.kind);
+        state.sessions = all.filter((x) => x.kind === 'therapy');
+        state.preps = all.filter((x) => x.kind === 'prep');
+        closeModal();
+        render();
+        toast(`${added} neu${skipped ? `, ${skipped} schon vorhanden` : ''}`);
+      }
+    } catch {
+      err.textContent = 'Die Sicherung konnte nicht gelesen werden. Sie ist vielleicht beschädigt.';
+    } finally {
+      btn.disabled = false;
+    }
   }
   if (ev.target.id === 'bioForm') {
     if (state.bioBusy) return;
@@ -788,7 +962,7 @@ document.addEventListener('visibilitychange', () => {
   } else {
     cover.hidden = true;
     const away = Date.now() - state.hiddenAt;
-    if (vault.isUnlocked() && !state.connecting && !state.bioBusy && away >= state.settings.autoLockMin * 60000 && state.hiddenAt) { lockApp(); tryBio(); }
+    if (vault.isUnlocked() && !state.connecting && !state.bioBusy && !state.noLock && away >= state.settings.autoLockMin * 60000 && state.hiddenAt) { lockApp(); tryBio(); }
   }
 });
 const uncover = () => { if (!document.hidden) cover.hidden = true; };
@@ -797,7 +971,7 @@ addEventListener('pageshow', uncover);
 cover.addEventListener('pointerdown', () => { cover.hidden = true; });
 setInterval(() => {
   uncover();
-  if (vault.isUnlocked() && !state.connecting && !state.bioBusy && state.settings.autoLockMin > 0 && Date.now() - state.last > state.settings.autoLockMin * 60000) lockApp();
+  if (vault.isUnlocked() && !state.connecting && !state.bioBusy && !state.noLock && state.settings.autoLockMin > 0 && Date.now() - state.last > state.settings.autoLockMin * 60000) lockApp();
 }, 15000);
 document.addEventListener('keyup', (ev) => {
   const hint = document.getElementById('capsHint');
@@ -808,7 +982,7 @@ document.addEventListener('keyup', (ev) => {
 /* Start */
 (async () => {
   state.hasVault = await vault.hasVault();
-  [state.bioAvail, state.bioOn] = await Promise.all([bioAvailable(), state.hasVault ? vault.hasBio() : false]);
+  [state.bioAvail, state.bioOn, state.hasRec] = await Promise.all([bioAvailable(), state.hasVault ? vault.hasBio() : false, state.hasVault ? vault.hasRecovery() : false]);
   state.view = 'lock';
   render();
   tryBio();
