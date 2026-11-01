@@ -282,6 +282,7 @@ export async function askCompanion(cfg, messages, opts = {}) {
     try {
       return orEmpty(await streamPost(`${base}/api/chat`, {}, { ...body, think: false }, PICK.ollama, { onText }));
     } catch (err) {
+      if (err instanceof TypeError) throw new Error('Ollama ist nicht erreichbar. Prüfe, ob es läuft und ob dein Browser den Zugriff auf dieses Gerät erlaubt.');
       if (!/^400 .*think/i.test(String(err.message))) throw err;
       return orEmpty(await streamPost(`${base}/api/chat`, {}, body, PICK.ollama, { onText }));
     }
