@@ -1,7 +1,7 @@
 import * as vault from './vault.js';
 import { checkCrisis, RESOURCES, INTERNATIONAL } from './crisis.js';
 import { GOOGLE, VERSION } from './config.js';
-import { PROVIDERS, askCompanion, sendsOffDevice, detectProvider, pickGeminiModel, googleSignOut, googleToken, friendlyError } from './ai.js';
+import { PROVIDERS, askCompanion, sendsOffDevice, detectProvider, pickGeminiModel, googleSignOut, googleToken, friendlyError, serviceReason } from './ai.js';
 import { MOODS, gardenSvg, dailyPrompt, weekStrip } from './garden.js';
 import { MAX_REPLIES, FLOW_SYSTEM, CLOSE_SYSTEM, PREP_SYSTEM, parseClose, addUnique, themeCounts, localPrep, prepInput, trend } from './reflect.js';
 import { treeSvg, groupByTheme } from './tree.js';
@@ -549,10 +549,9 @@ async function runConnect({ full = false, restore = null } = {}) {
     state.connecting = '';
     state.connectRestore = null;
     if (restore) Object.assign(s, restore);
-    state.testMsg = google && /^(400|401|403)/.test(m) ? 'Google hat den Zugriff abgelehnt. Prüfe, ob dein Konto als Testnutzer eingetragen ist.'
+    state.testMsg = google && /^(400|401|403)/.test(m) ? `Google hat den Zugriff abgelehnt. Prüfe, ob dein Konto als Testnutzer eingetragen ist.${serviceReason(err)}`
       : google && !/^\d{3}/.test(m) ? m
-        : /^(400|401|403)/.test(m) ? 'Der Schlüssel wurde nicht akzeptiert. Prüfe, ob du ihn vollständig kopiert hast.'
-          : friendlyError(err);
+        : friendlyError(err);
     render();
     return false;
   }

@@ -97,7 +97,7 @@ export function detectProvider(key) {
 // Fragt bei Google die verfügbaren Modelle ab und nimmt das neueste stabile Flash-Modell.
 export async function pickGeminiModel(cfg) {
   const res = await fetch(`${cfg.base.replace(/\/$/, '')}/v1beta/models?pageSize=200`, { headers: await geminiHeaders(cfg), signal: AbortSignal.timeout(20000) });
-  if (!res.ok) throw new Error(`${res.status} ${(await res.text()).slice(0, 200)}`);
+  if (!res.ok) throw new Error(`${res.status} ${(await res.text()).slice(0, 1500)}`);
   const { models = [] } = await res.json();
   const best = models
     .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
@@ -136,11 +136,18 @@ const PICK = {
 function parseLine(line, pick) {
   const data = line.startsWith('data:') ? line.slice(5).trim() : line;
   if (!data || data === '[DONE]' || !/^[{[]/.test(data)) return '';
+  let j;
   try {
-    return pick(JSON.parse(data)) || '';
+    j = JSON.parse(data);
   } catch {
     return '';
   }
+  // Fehler können auch mitten im Datenstrom kommen, obwohl die Antwort mit Status 200 begann.
+  if (j.error || j.type === 'error') {
+    const code = Number(j.error?.code) || (j.error?.type === 'overloaded_error' ? 503 : 500);
+    throw new Error(`${code} ${data.slice(0, 1500)}`);
+  }
+  return pick(j) || '';
 }
 
 async function streamPost(url, headers, body, pick, { onText, firstMs = TIMING.first, retries = 1 } = {}) {
@@ -155,7 +162,7 @@ async function streamPost(url, headers, body, pick, { onText, firstMs = TIMING.f
   try {
     const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body), signal: ctl.signal });
     if (!res.ok) {
-      const err = new Error(`${res.status} ${(await res.text()).slice(0, 200)}`);
+      const err = new Error(`${res.status} ${(await res.text()).slice(0, 1500)}`);
       if (retries > 0 && isOverload(err)) {
         clearTimeout(timer);
         await new Promise((r) => { setTimeout(r, TIMING.retry); });
@@ -200,14 +207,29 @@ async function streamPost(url, headers, body, pick, { onText, firstMs = TIMING.f
   }
 }
 
+// Was der Dienst selbst als Grund nennt, im Original und gekürzt.
+export function serviceReason(err) {
+  const m = /"message"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(String(err.message));
+  if (!m) return '';
+  const first = m[1].replace(/\\n/g, ' ').replace(/\\"/g, '"').split(/(?<=\.)\s+(?=[A-ZÄÖÜ])/)[0].slice(0, 160);
+  return ` Antwort des Dienstes: „${first}“`;
+}
+
 // Übersetzt Fehler in Sätze, nie rohes JSON in die Oberfläche.
 export function friendlyError(err) {
   const m = String(err.message);
+  const why = serviceReason(err);
   if (isOverload(err)) return 'Der KI-Dienst ist gerade überlastet. Das liegt nicht an dir oder deiner Anmeldung. Versuche es in ein paar Minuten noch einmal.';
-  if (/^429/.test(m)) return 'Das Kontingent ist gerade aufgebraucht. Versuche es später noch einmal.';
-  if (/^(400|401|403)/.test(m)) return 'Der KI-Dienst hat den Zugriff abgelehnt. Prüfe deine Verbindung in den Einstellungen.';
+  if (/credit balance|insufficient_quota/i.test(m)) return `Bei diesem Anbieter fehlt Guthaben. Der API-Zugang wird dort getrennt von einem Abo abgerechnet.${why}`;
+  if (/^429/.test(m)) {
+    const wait = /"retryDelay"\s*:\s*"(\d+)/.exec(m);
+    return `Der Dienst begrenzt gerade deine Anfragen. Das kann ein Limit pro Minute oder pro Tag sein.${wait ? ` Versuche es in ${wait[1]} Sekunden wieder.` : ''}${why}`;
+  }
+  if (/^(401|403)/.test(m)) return `Der Zugang wurde abgelehnt. Prüfe deinen Schlüssel oder deine Anmeldung.${why}`;
+  if (/^404/.test(m)) return `Dieses Modell gibt es bei dem Anbieter nicht. Du kannst es unter „Erweitert“ ändern.${why}`;
+  if (/^400/.test(m)) return `Der Dienst hat die Anfrage abgelehnt.${why}`;
   const code = /^(\d{3}) /.exec(m);
-  if (code) return `Der KI-Dienst hat einen Fehler gemeldet (Code ${code[1]}).`;
+  if (code) return `Der KI-Dienst hat einen Fehler gemeldet (Code ${code[1]}).${why}`;
   if (/fetch|network/i.test(m)) return 'Der KI-Dienst ist nicht erreichbar. Prüfe deine Internetverbindung.';
   return m.slice(0, 160);
 }
