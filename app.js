@@ -1,5 +1,5 @@
 import * as vault from './vault.js';
-import { checkCrisis, RESOURCES, INTERNATIONAL } from './crisis.js';
+import { checkCrisis, withHelp, RESOURCES, INTERNATIONAL } from './crisis.js';
 import { GOOGLE, VERSION } from './config.js';
 import { PROVIDERS, askCompanion, sendsOffDevice, detectProvider, pickGeminiModel, googleSignOut, googleToken, friendlyError, serviceReason } from './ai.js';
 import { MOODS, gardenSvg, dailyPrompt, weekStrip } from './garden.js';
@@ -300,7 +300,7 @@ function vSettings() {
     ${p.oauth && !canGoogle() ? `<label class="field">OAuth-Client-ID (Betreiber)<input type="text" id="s-clientid" value="${esc(s.clientId)}" placeholder="…apps.googleusercontent.com"></label>
       <label class="field">Cloud-Projekt-ID (Betreiber)<input type="text" id="s-projectid" value="${esc(s.projectId)}"></label>` : ''}
     ${p.local ? `<label class="field">Adresse<input type="url" id="s-base" value="${esc(s.base)}"></label><label class="field">Modell<input type="text" id="s-model" value="${esc(s.model)}"></label>
-      <p class="small soft" style="margin:0">Der Browser darf Ollama nur ansprechen, wenn es diese Seite erlaubt, z. B. mit <code>OLLAMA_ORIGINS=http://localhost:5173 ollama serve</code>. Kleine Modelle sind für eine Frage und Spiegelung gut, für tiefe Gespräche schwächer.</p>` : ''}
+      <p class="small soft" style="margin:0">Das funktioniert nur auf dem Gerät, auf dem Ollama läuft. Lade das Modell einmal mit <code>ollama pull ${esc(s.model)}</code> und starte Ollama so, dass Tend es erreichen darf: <code>OLLAMA_ORIGINS=${esc(location.origin)} ollama serve</code></p>` : ''}
     ${p.needsKey ? `<details class="small"><summary class="soft">Erweitert (Adresse und Modell)</summary><div class="stack" style="margin-top:8px"><label class="field">Adresse<input type="url" id="s-base" value="${esc(s.base)}"></label><label class="field">Modell${s.provider === 'gemini' ? ' (wird automatisch auf das neueste Flash-Modell gesetzt)' : ''}<input type="text" id="s-model" value="${esc(s.model)}"></label></div></details>` : ''}
     ${s.provider !== 'off' && !(p.oauth && canGoogle()) && !state.connecting ? `<button class="btn ${canGoogle() ? 'ghost' : ''} block" data-a="connect">${p.oauth ? 'Mit Google anmelden' : 'Verbinden und testen'}</button>` : ''}
     </div></details>`}
@@ -331,7 +331,9 @@ function vSettings() {
 async function enter() {
   state.hasRec = await vault.hasRecovery();
   state.settings = { ...DEFAULTS, ...(await vault.getSecret('settings')) };
-  const s = state.settings; // Ältere Einstellungen kennen connectedAt noch nicht: gewähltes Modell oder Einwilligung zeigen eine geprüfte Verbindung.
+  const s = state.settings;
+  if (s.provider === 'ollama' && s.model === 'gemma3:4b') s.model = PROVIDERS.ollama.model; // Früherer Standard, den es so nie gab
+  // Ältere Einstellungen kennen connectedAt noch nicht: gewähltes Modell oder Einwilligung zeigen eine geprüfte Verbindung.
   if (!s.connectedAt && s.provider !== 'off' && (s.consent === `${s.provider}|${s.base}` || s.model !== PROVIDERS[s.provider].model)) s.connectedAt = Date.now();
   navigator.storage?.persist?.().catch(() => {}); // Bittet den Browser, das Tagebuch bei Speichermangel nicht zu löschen
   const all = await vault.listEntries();
@@ -448,16 +450,18 @@ async function askAi(userText, close = false) {
       const el = $('.bubble.ai.typing');
       if (el) el.textContent = 'Das dauert gerade etwas länger…';
     }, 15000);
+    const flagged = checkCrisis(e.text) || e.thread.some((t) => t.role === 'user' && checkCrisis(t.content));
     const reply = await askCompanion(state.settings, msgs, doClose ? { system: CLOSE_SYSTEM, maxTokens: 500 } : { system: FLOW_SYSTEM, onText }).finally(() => clearTimeout(slow));
     if (doClose) {
       const r = parseClose(reply);
-      e.thread.push({ role: 'assistant', content: r.message + (r.step ? `\n\nKleiner Schritt: ${r.step}` : ''), final: true });
+      const closing = r.message + (r.step ? `\n\nKleiner Schritt: ${r.step}` : '');
+      e.thread.push({ role: 'assistant', content: flagged ? withHelp(closing) : closing, final: true });
       if (r.insight && !e.insight) e.insight = r.insight;
       e.themes ||= [];
       r.themes.forEach((t) => addUnique(e.themes, t));
       e.closed = true;
     } else {
-      e.thread.push({ role: 'assistant', content: reply });
+      e.thread.push({ role: 'assistant', content: flagged ? withHelp(reply) : reply });
     }
     await vault.saveEntry(e);
   } catch (err) {

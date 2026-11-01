@@ -20,7 +20,7 @@ export const PROVIDERS = {
     },
   },
   geminiGoogle: { label: 'Google-Konto', base: 'https://generativelanguage.googleapis.com', model: 'gemini-2.5-flash', oauth: true },
-  ollama: { label: 'Lokal (Ollama)', local: true, base: 'http://localhost:11434', model: 'gemma3:4b' },
+  ollama: { label: 'Lokal (Ollama)', local: true, base: 'http://localhost:11434', model: 'gemma4:12b' },
   anthropic: { label: 'Anthropic', base: 'https://api.anthropic.com', model: 'claude-haiku-5-5', needsKey: true },
   openai: { label: 'OpenAI-kompatibel', base: 'https://api.openai.com/v1', model: 'gpt-4o-mini', needsKey: true },
 };
@@ -277,8 +277,14 @@ export async function askCompanion(cfg, messages, opts = {}) {
       { model: cfg.model, max_tokens: maxTokens, stream: true, messages: [{ role: 'system', content: system }, ...messages] }, PICK.openai, { onText }));
   }
   if (cfg.provider === 'ollama') {
-    return orEmpty(await streamPost(`${base}/api/chat`, {},
-      { model: cfg.model, stream: true, messages: [{ role: 'system', content: system }, ...messages] }, PICK.ollama, { onText }));
+    // Ohne Denkphase antworten lokale Modelle in Sekunden statt Minuten, auf 16 GB gemessen. Nicht jedes Modell kennt die Option.
+    const body = { model: cfg.model, stream: true, messages: [{ role: 'system', content: system }, ...messages] };
+    try {
+      return orEmpty(await streamPost(`${base}/api/chat`, {}, { ...body, think: false }, PICK.ollama, { onText }));
+    } catch (err) {
+      if (!/^400 .*think/i.test(String(err.message))) throw err;
+      return orEmpty(await streamPost(`${base}/api/chat`, {}, body, PICK.ollama, { onText }));
+    }
   }
   throw new Error('Keine Begleitung eingerichtet.');
 }
