@@ -1,5 +1,6 @@
 // Lokaler, verschlüsselter Speicher (IndexedDB). Ohne Schlüssel sind alle Inhalte unlesbar.
-import { b64, rand, deriveKey, encrypt, decrypt } from './crypto.js';
+import { b64, rand, deriveKey, deriveRaw, importRaw, prfKey, encrypt, decrypt } from './crypto.js';
+import { registerPasskey, readPrf, forgetPasskey } from './bio.js';
 
 const ITERATIONS = 600000;
 let dbp;
@@ -57,6 +58,38 @@ export async function unlock(pass) {
   return true;
 }
 
+// --- Fingerabdruck: Der Schlüssel liegt nur eingepackt im Speicher, auspacken kann ihn nur der Sensor.
+export const hasBio = async () => !!(await rawGet('bio'));
+
+// Gibt false zurück, wenn die Passphrase nicht stimmt. Fehler vom Sensor werden weitergereicht.
+export async function enableBio(pass) {
+  const meta = (await rawGet('meta')).v;
+  const raw = await deriveRaw(pass, b64.from(meta.salt), meta.iterations);
+  try {
+    await decrypt(await importRaw(raw), meta.check);
+  } catch {
+    return false;
+  }
+  const { credId, prfSalt, output } = await registerPasskey();
+  await rawPut('bio', { credId, prfSalt, wrapped: await encrypt(await prfKey(output), { raw: b64.to(raw) }) });
+  return true;
+}
+
+export async function unlockBio() {
+  const bio = (await rawGet('bio')).v;
+  const output = await readPrf(bio.credId, bio.prfSalt);
+  const { raw } = await decrypt(await prfKey(output), bio.wrapped);
+  const k = await importRaw(b64.from(raw));
+  await decrypt(k, (await rawGet('meta')).v.check);
+  key = k;
+}
+
+export async function disableBio() {
+  const row = await rawGet('bio');
+  if (row) forgetPasskey(row.v.credId);
+  await clearSecret('bio');
+}
+
 export async function saveEntry(e) {
   const blob = await encrypt(key, e);
   await run('entries', 'readwrite', (s) => s.put({ id: e.id, blob }));
@@ -87,6 +120,8 @@ export const clearSecret = (name) => run('kv', 'readwrite', (s) => s.delete(name
 
 export async function wipe() {
   key = null;
+  const bio = await rawGet('bio');
+  if (bio) forgetPasskey(bio.v.credId);
   const d = await db();
   d.close();
   dbp = null;

@@ -46,6 +46,7 @@ const ICONS = {
   talk: '<path d="M5 5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8l-4 4v-4H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/>',
   heart: '<path d="M12 20s-8-5-8-11a4.5 4.5 0 0 1 8-2.8A4.5 4.5 0 0 1 20 9c0 6-8 11-8 11z"/>',
   check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  finger: '<path d="M12 11v3a6 6 0 0 1-1 3.5"/><path d="M8.5 20a9 9 0 0 0 .5-6v-2.5a3 3 0 0 1 6 0V14a12 12 0 0 1-.8 4.5"/><path d="M6 16a13 13 0 0 0 .2-3v-1.5a5.8 5.8 0 0 1 9.5-4.4"/><path d="M18 11.5V14c0 .8-.1 1.6-.2 2.4"/>',
 };
 
 export const icon = (name) => `<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;

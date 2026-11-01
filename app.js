@@ -6,6 +6,7 @@ import { MOODS, gardenSvg, dailyPrompt, weekStrip } from './garden.js';
 import { MAX_REPLIES, FLOW_SYSTEM, CLOSE_SYSTEM, PREP_SYSTEM, parseClose, addUnique, themeCounts, localPrep, prepInput, trend } from './reflect.js';
 import { treeSvg, groupByTheme } from './tree.js';
 import { icon, moodArt, sprout } from './art.js';
+import { bioAvailable, BioUnsupported } from './bio.js';
 
 const $ = (s) => document.querySelector(s);
 const app = $('#app');
@@ -51,12 +52,13 @@ function vLock() {
   return `<div class="lock stack center">
     ${gardenSvg([], null)}<h1>Tend</h1>
     <p class="soft">${first ? 'Dein Tagebuch bleibt auf diesem Gerät und wird verschlüsselt. Wähle eine Passphrase – nur du kennst sie.' : 'Schön, dass du da bist.'}</p>
+    ${state.bioOn && state.bioAvail ? `<button class="btn block" data-a="bioUnlock">${icon('finger')}Mit Fingerabdruck öffnen</button><p class="small soft" style="margin:0">oder mit deiner Passphrase</p>` : ''}
     <form id="lockForm" class="stack" autocomplete="off">
       <div class="pw-wrap"><input type="password" id="pw" placeholder="Passphrase" autocomplete="${first ? 'new-password' : 'current-password'}" required autofocus><button class="pw-toggle" type="button" data-a="togglePw">Anzeigen</button></div>
       ${first ? '<input type="password" id="pw2" placeholder="Passphrase wiederholen" autocomplete="new-password" required>' : ''}
       <p id="capsHint" class="small soft" style="margin:0" hidden>Die Feststelltaste ist aktiv.</p>
       <p id="lockErr" class="small" style="color:var(--danger);min-height:1.2em" role="alert"></p>
-      <button class="btn block" type="submit">${first ? 'Tagebuch anlegen' : 'Öffnen'}</button>
+      <button class="btn ${state.bioOn && state.bioAvail ? 'ghost' : ''} block" type="submit">${first ? 'Tagebuch anlegen' : 'Öffnen'}</button>
     </form>
     ${first ? '<p class="small soft">Ohne Passphrase gibt es keine Wiederherstellung – auch nicht durch uns. Das ist der Preis echter Privatsphäre. Mindestens 8 Zeichen; ein ganzer Satz ist am besten.</p>' : ''}
     <button class="btn ghost" data-a="help">Ich brauche gerade Hilfe</button>
@@ -250,6 +252,9 @@ function vSettings() {
   </div>
   <div class="card stack"><h3>Sicherheit</h3>
     <label class="field">Automatisch sperren nach (Minuten, 0 = sobald du die App verlässt)<input type="number" id="s-lock" min="0" max="60" value="${s.autoLockMin}"></label>
+    ${!state.bioAvail ? '<p class="small soft">Entsperren per Fingerabdruck ist auf diesem Gerät oder in diesem Browser nicht verfügbar.</p>'
+    : state.bioOn ? `<div class="row" style="justify-content:space-between;flex-wrap:nowrap"><span class="row" style="flex-wrap:nowrap;gap:8px">${icon('finger')}<strong>Fingerabdruck ist aktiv</strong></span><button class="btn ghost" data-a="bioOff">Ausschalten</button></div>`
+      : `<button class="btn ghost block" data-a="bioSetup">${icon('finger')}Fingerabdruck einrichten</button>`}
     <p class="small soft">Alle Einträge, Entwürfe und dein API-Schlüssel sind mit AES-256 verschlüsselt (Schlüssel aus deiner Passphrase, PBKDF2 mit 600.000 Runden). Es gibt keine Konten, keine Analyse und keinen Server.</p>
   </div>
   <button class="btn block" data-a="saveSettings">Speichern</button>
@@ -387,6 +392,23 @@ async function askAi(userText, close = false) {
   render();
 }
 
+// Fingerabdruck beim Öffnen. Abbrechen ist kein Fehler: Dann bleibt einfach die Passphrase.
+async function tryBio(fromTap = false) {
+  if (!state.bioOn || !state.bioAvail || state.bioBusy || vault.isUnlocked()) return;
+  state.bioBusy = true;
+  try {
+    await vault.unlockBio();
+    state.bioBusy = false;
+    await enter();
+  } catch (err) {
+    state.bioBusy = false;
+    if (fromTap && err.name !== 'NotAllowedError' && err.name !== 'AbortError') {
+      const box = $('#lockErr');
+      if (box) box.textContent = 'Der Fingerabdruck hat nicht geklappt. Bitte öffne Tend mit deiner Passphrase.';
+    }
+  }
+}
+
 const newId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 const themeObj = () => (state.view === 'session' ? state.sess : state.entry);
 async function themesChanged() {
@@ -484,6 +506,16 @@ function download(name, text) {
 const actions = {
   help: () => showModal(helpHtml(false)),
   reloadApp: () => location.reload(),
+  bioUnlock: () => tryBio(true),
+  bioSetup: () => showModal(`<h2>Fingerabdruck einrichten</h2><p class="soft">Bestätige einmal deine Passphrase. Danach öffnest du Tend mit deinem Fingerabdruck. Die Passphrase bleibt gültig und ist dein Ersatz, falls der Sensor einmal nicht geht. Merke sie dir also weiterhin.</p>
+    <form id="bioForm" class="stack" autocomplete="off"><input type="password" id="bioPw" placeholder="Passphrase" autocomplete="current-password" required><p id="bioErr" class="small" style="color:var(--danger);margin:0" role="alert"></p>
+    <div class="row"><button class="btn" type="submit">Weiter</button><button class="btn ghost" type="button" data-a="closeModal">Abbrechen</button></div></form>`),
+  bioOff: async () => {
+    await vault.disableBio();
+    state.bioOn = false;
+    render();
+    toast('Fingerabdruck ausgeschaltet');
+  },
   pickProvider: (el) => {
     collectSettings();
     const p = PROVIDERS[el.dataset.p];
@@ -655,6 +687,7 @@ const actions = {
     if ($('#wipeIn').value.trim() !== 'LÖSCHEN') return;
     await vault.wipe();
     state.hasVault = false;
+    state.bioOn = false;
     lockApp();
   },
 };
@@ -709,6 +742,33 @@ document.addEventListener('submit', async (ev) => {
     btn.disabled = false; btn.textContent = 'Öffnen';
     ev.target.classList.remove('shake'); void ev.target.offsetWidth; ev.target.classList.add('shake');
   }
+  if (ev.target.id === 'bioForm') {
+    if (state.bioBusy) return;
+    const btn = ev.target.querySelector('button[type=submit]');
+    const err = $('#bioErr');
+    err.textContent = '';
+    btn.disabled = true;
+    btn.textContent = 'Warte auf den Sensor…';
+    state.bioBusy = true;
+    try {
+      if (await vault.enableBio($('#bioPw').value)) {
+        state.bioOn = true;
+        closeModal();
+        render();
+        toast('Fingerabdruck ist eingerichtet');
+        return;
+      }
+      err.textContent = 'Das war nicht die richtige Passphrase.';
+    } catch (e) {
+      err.textContent = e instanceof BioUnsupported ? e.message
+        : e.name === 'NotAllowedError' || e.name === 'AbortError' ? 'Abgebrochen. Du kannst es jederzeit noch einmal versuchen.'
+          : 'Das Einrichten hat nicht geklappt. Du kannst weiter deine Passphrase nutzen.';
+    } finally {
+      state.bioBusy = false;
+    }
+    btn.disabled = false;
+    btn.textContent = 'Weiter';
+  }
   if (ev.target.id === 'themeForm') {
     const v = $('#themeIn').value;
     if (v.trim()) { addUnique((themeObj().themes ||= []), v); themesChanged(); }
@@ -728,7 +788,7 @@ document.addEventListener('visibilitychange', () => {
   } else {
     cover.hidden = true;
     const away = Date.now() - state.hiddenAt;
-    if (vault.isUnlocked() && !state.connecting && away >= state.settings.autoLockMin * 60000 && state.hiddenAt) lockApp();
+    if (vault.isUnlocked() && !state.connecting && !state.bioBusy && away >= state.settings.autoLockMin * 60000 && state.hiddenAt) { lockApp(); tryBio(); }
   }
 });
 const uncover = () => { if (!document.hidden) cover.hidden = true; };
@@ -737,7 +797,7 @@ addEventListener('pageshow', uncover);
 cover.addEventListener('pointerdown', () => { cover.hidden = true; });
 setInterval(() => {
   uncover();
-  if (vault.isUnlocked() && !state.connecting && state.settings.autoLockMin > 0 && Date.now() - state.last > state.settings.autoLockMin * 60000) lockApp();
+  if (vault.isUnlocked() && !state.connecting && !state.bioBusy && state.settings.autoLockMin > 0 && Date.now() - state.last > state.settings.autoLockMin * 60000) lockApp();
 }, 15000);
 document.addEventListener('keyup', (ev) => {
   const hint = document.getElementById('capsHint');
@@ -748,8 +808,10 @@ document.addEventListener('keyup', (ev) => {
 /* Start */
 (async () => {
   state.hasVault = await vault.hasVault();
+  [state.bioAvail, state.bioOn] = await Promise.all([bioAvailable(), state.hasVault ? vault.hasBio() : false]);
   state.view = 'lock';
   render();
+  tryBio();
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     try { sessionStorage.removeItem('tend-repaired'); } catch { /* Nur die Reparatur-Sperre aus boot.js */ }
     const hadWorker = !!navigator.serviceWorker.controller;

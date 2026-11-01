@@ -26,6 +26,26 @@ export async function deriveKey(pass, salt, iterations) {
   );
 }
 
+// Dieselben Bits wie deriveKey, aber als Rohwert: nötig, um den Schlüssel für den Fingerabdruck einzupacken.
+export async function deriveRaw(pass, salt, iterations) {
+  const base = await crypto.subtle.importKey('raw', enc.encode(pass), 'PBKDF2', false, ['deriveBits']);
+  return new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations, hash: 'SHA-256' }, base, 256));
+}
+
+export const importRaw = (raw) => crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']);
+
+// Aus dem Geheimnis des Sensors wird der Schlüssel, der den Tagebuch-Schlüssel einpackt.
+export async function prfKey(output) {
+  const base = await crypto.subtle.importKey('raw', output, 'HKDF', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(32), info: enc.encode('tend-biometric-unlock') },
+    base,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  );
+}
+
 export async function encrypt(key, obj) {
   const iv = rand(12);
   const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(JSON.stringify(obj)));
