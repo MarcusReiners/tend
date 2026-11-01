@@ -1,4 +1,9 @@
 // Läuft vor der App und bewusst ohne Module: So bleibt sie funktionsfähig, auch wenn die App selbst nicht starten kann.
+// Ohne HTTPS gibt der Browser die Verschlüsselung nicht frei; nur die lokale Entwicklung darf ohne laufen.
+if (location.protocol === 'http:' && !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)) {
+  location.replace(`https://${location.host}${location.pathname}${location.search}`);
+}
+
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
     // Neue Versionen auch dann bemerken, wenn der Tab lange offen bleibt.
