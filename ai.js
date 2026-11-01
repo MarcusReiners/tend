@@ -15,8 +15,8 @@ export const PROVIDERS = {
     label: 'Mistral', base: 'https://api.mistral.ai/v1', model: 'mistral-small-latest', needsKey: true,
     guide: {
       url: 'https://console.mistral.ai/', host: 'console.mistral.ai',
-      steps: ['Öffne die Seite und lege ein Konto an. Mistral bestätigt es per Telefonnummer.', 'Aktiviere unter „Subscriptions“ den kostenlosen Tarif „Experiment“.', 'Erstelle in deinem Workspace unter „API Keys“ einen Schlüssel und kopiere ihn.', 'Füge ihn unten ein und tippe auf „Verbinden und testen“.'],
-      note: 'Im kostenlosen Tarif darf Mistral deine Anfragen zur Verbesserung seiner Modelle nutzen. Überlege dir, welche Einträge du freigibst, oder nutze einen bezahlten Tarif. Prüfe die aktuellen Bedingungen.',
+      steps: ['Das ist Mistral Studio. Melde dich an oder lege ein Konto an, der kostenlose Modus ist voreingestellt.', 'Wähle links „API Keys“ und dann „Create new key“.', 'Gib einen Namen und ein Ablaufdatum an, bei „Connector access“ reicht „Shared connectors only“.', 'Kopiere den Schlüssel sofort, er wird nur einmal angezeigt.', 'Füge ihn unten ein und tippe auf „Verbinden und testen“.'],
+      note: 'Im kostenlosen Modus kann Mistral deine Anfragen zur Verbesserung seiner Modelle nutzen. Prüfe die aktuellen Bedingungen und überlege dir, welche Einträge du freigibst.',
     },
   },
   geminiGoogle: { label: 'Google-Konto', base: 'https://generativelanguage.googleapis.com', model: 'gemini-2.5-flash', oauth: true },
