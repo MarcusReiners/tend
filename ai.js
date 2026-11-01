@@ -122,24 +122,82 @@ export const sendsOffDevice = (cfg) => cfg.provider !== 'off' && !isLocalUrl(cfg
 
 const isOverload = (err) => /^(500|502|503|504) /.test(String(err.message));
 
-// Überlastung ist bei KI-Diensten normal und meist kurz: einmal kurz warten und erneut versuchen.
-async function post(url, headers, body, retries = 1) {
-  let res;
+// Antworten kommen als Datenstrom: Ein langer Text sprengt so kein Zeitlimit, nur echtes Stocken zählt.
+export const TIMING = { first: 45000, fallback: 30000, between: 30000, retry: 1200 };
+const STALL = 'Der KI-Dienst hat nicht rechtzeitig geantwortet. Versuche es gleich noch einmal.';
+
+const PICK = {
+  gemini: (j) => (j.candidates?.[0]?.content?.parts || []).map((p) => (p.thought ? '' : p.text || '')).join(''),
+  anthropic: (j) => (j.type === 'content_block_delta' ? j.delta?.text || '' : ''),
+  openai: (j) => j.choices?.[0]?.delta?.content ?? j.choices?.[0]?.message?.content ?? '',
+  ollama: (j) => j.message?.content || '',
+};
+
+function parseLine(line, pick) {
+  const data = line.startsWith('data:') ? line.slice(5).trim() : line;
+  if (!data || data === '[DONE]' || !/^[{[]/.test(data)) return '';
   try {
-    res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body), signal: AbortSignal.timeout(60000) });
-  } catch (e) {
-    if (e.name === 'TimeoutError') throw new Error('Der KI-Dienst hat nach 60 Sekunden nicht geantwortet. Versuche es gleich noch einmal.');
-    throw e;
+    return pick(JSON.parse(data)) || '';
+  } catch {
+    return '';
   }
-  if (!res.ok) {
-    const err = new Error(`${res.status} ${(await res.text()).slice(0, 200)}`);
-    if (retries > 0 && isOverload(err)) {
-      await new Promise((r) => { setTimeout(r, 1200); });
-      return post(url, headers, body, retries - 1);
+}
+
+async function streamPost(url, headers, body, pick, { onText, firstMs = TIMING.first, retries = 1 } = {}) {
+  const ctl = new AbortController();
+  let timer;
+  let stalled = false;
+  const arm = (ms) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => { stalled = true; ctl.abort(); }, ms);
+  };
+  arm(firstMs);
+  try {
+    const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body), signal: ctl.signal });
+    if (!res.ok) {
+      const err = new Error(`${res.status} ${(await res.text()).slice(0, 200)}`);
+      if (retries > 0 && isOverload(err)) {
+        clearTimeout(timer);
+        await new Promise((r) => { setTimeout(r, TIMING.retry); });
+        return await streamPost(url, headers, body, pick, { onText, firstMs, retries: retries - 1 });
+      }
+      throw err;
     }
-    throw err;
+    const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+    let buf = '';
+    let all = '';
+    let text = '';
+    const take = (line) => {
+      const part = parseLine(line.trim(), pick);
+      if (part) { text += part; onText?.(text); }
+    };
+    for (;;) {
+      arm(text ? TIMING.between : firstMs);
+      const { value, done } = await reader.read();
+      if (done) break;
+      all += value;
+      buf += value;
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        take(buf.slice(0, nl));
+        buf = buf.slice(nl + 1);
+      }
+    }
+    take(buf);
+    if (!text) { // Anbieter ohne Datenstrom schicken alles als ein JSON-Objekt, oft über mehrere Zeilen.
+      try { text = pick(JSON.parse(all)) || ''; } catch { /* Bleibt leer und wird unten gemeldet */ }
+    }
+    return text.trim();
+  } catch (e) {
+    if (stalled) {
+      const err = new Error(STALL);
+      err.stalled = true;
+      throw err;
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
   }
-  return res.json();
 }
 
 // Übersetzt Fehler in Sätze, nie rohes JSON in die Oberfläche.
@@ -154,18 +212,23 @@ export function friendlyError(err) {
   return m.slice(0, 160);
 }
 
+const orEmpty = (text) => {
+  if (!text) throw new Error('Die Antwort war leer, möglicherweise vom Anbieter blockiert. Versuche es noch einmal.');
+  return text;
+};
+
 // messages: [{role:'user'|'assistant', content}]
 export async function askCompanion(cfg, messages, opts = {}) {
   const system = opts.system ?? SYSTEM;
   const maxTokens = opts.maxTokens ?? 400;
+  const onText = opts.onText;
   const base = cfg.base.replace(/\/$/, '');
   if (cfg.provider === 'anthropic') {
-    const r = await post(`${base}/v1/messages`, {
+    return orEmpty(await streamPost(`${base}/v1/messages`, {
       'x-api-key': cfg.apiKey,
       'anthropic-version': '2023-06-01',
       'anthropic-dangerous-direct-browser-access': 'true',
-    }, { model: cfg.model, max_tokens: maxTokens, system, messages });
-    return r.content.map((c) => c.text || '').join('').trim();
+    }, { model: cfg.model, max_tokens: maxTokens, system, messages, stream: true }, PICK.anthropic, { onText }));
   }
   if (isGemini(cfg)) {
     const headers = await geminiHeaders(cfg);
@@ -175,28 +238,25 @@ export async function askCompanion(cfg, messages, opts = {}) {
       generationConfig: { maxOutputTokens: Math.max(1024, maxTokens * 2) },
     };
     let firstErr;
-    for (const model of [cfg.model, ...(cfg.fallbackModels || [])]) { // Ist ein Modell überlastet, springt ein anderes ein.
+    const models = [cfg.model, ...(cfg.fallbackModels || [])].slice(0, 3); // Begrenzt die Wartezeit im schlimmsten Fall
+    for (const [i, model] of models.entries()) { // Ist ein Modell überlastet oder stockt es, springt ein anderes ein.
       try {
-        const r = await post(`${base}/v1beta/models/${encodeURIComponent(model)}:generateContent`, headers, body);
-        const text = (r.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('').trim();
-        if (!text) throw new Error('Die Antwort war leer, möglicherweise von Google blockiert.');
-        return text;
+        if (i) onText?.(''); // Angefangenen Text des Vorgängers verwerfen
+        return orEmpty(await streamPost(`${base}/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`, headers, body, PICK.gemini, { onText, firstMs: i ? TIMING.fallback : TIMING.first }));
       } catch (err) {
         firstErr ||= err;
-        if (!isOverload(err) && !/^404 /.test(String(err.message))) throw err;
+        if (!err.stalled && !isOverload(err) && !/^404 /.test(String(err.message))) throw err;
       }
     }
     throw firstErr;
   }
   if (cfg.provider === 'openai' || cfg.provider === 'mistral') {
-    const r = await post(`${base}/chat/completions`, { authorization: `Bearer ${cfg.apiKey}` },
-      { model: cfg.model, max_tokens: maxTokens, messages: [{ role: 'system', content: system }, ...messages] });
-    return r.choices[0].message.content.trim();
+    return orEmpty(await streamPost(`${base}/chat/completions`, { authorization: `Bearer ${cfg.apiKey}` },
+      { model: cfg.model, max_tokens: maxTokens, stream: true, messages: [{ role: 'system', content: system }, ...messages] }, PICK.openai, { onText }));
   }
   if (cfg.provider === 'ollama') {
-    const r = await post(`${base}/api/chat`, {},
-      { model: cfg.model, stream: false, messages: [{ role: 'system', content: system }, ...messages] });
-    return r.message.content.trim();
+    return orEmpty(await streamPost(`${base}/api/chat`, {},
+      { model: cfg.model, stream: true, messages: [{ role: 'system', content: system }, ...messages] }, PICK.ollama, { onText }));
   }
   throw new Error('Keine Begleitung eingerichtet.');
 }

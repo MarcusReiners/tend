@@ -436,7 +436,19 @@ async function askAi(userText, close = false) {
     else msgs.push({ role: 'user', content: note });
   }
   try {
-    const reply = await askCompanion(state.settings, msgs, doClose ? { system: CLOSE_SYSTEM, maxTokens: 500 } : { system: FLOW_SYSTEM });
+    // Sichtbar mitschreiben; der Abschluss hat ein festes Format und erscheint erst fertig aufbereitet.
+    const onText = doClose ? undefined : (t) => {
+      const el = $('.bubble.ai.live') || $('.bubble.ai.typing');
+      if (!el) return;
+      el.classList.remove('typing');
+      el.classList.add('live');
+      el.textContent = t || '…denkt nach';
+    };
+    const slow = setTimeout(() => {
+      const el = $('.bubble.ai.typing');
+      if (el) el.textContent = 'Das dauert gerade etwas länger…';
+    }, 15000);
+    const reply = await askCompanion(state.settings, msgs, doClose ? { system: CLOSE_SYSTEM, maxTokens: 500 } : { system: FLOW_SYSTEM, onText }).finally(() => clearTimeout(slow));
     if (doClose) {
       const r = parseClose(reply);
       e.thread.push({ role: 'assistant', content: r.message + (r.step ? `\n\nKleiner Schritt: ${r.step}` : ''), final: true });

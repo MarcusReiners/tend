@@ -1,5 +1,5 @@
 // Nur statische App-Dateien werden gecacht, niemals Tagebuchinhalte oder API-Antworten.
-const CACHE = 'tend-v16';
+const CACHE = 'tend-v17';
 const FILES = ['./', 'index.html', 'boot.js', 'style.css', 'app.js', 'crypto.js', 'vault.js', 'crisis.js', 'ai.js', 'garden.js', 'config.js', 'reflect.js', 'tree.js', 'art.js', 'bio.js', 'fonts/figtree-latin-wght-normal.woff2', 'fonts/figtree-latin-ext-wght-normal.woff2', 'icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'manifest.webmanifest'];
 
 self.addEventListener('install', (e) => {
