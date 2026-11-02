@@ -51,6 +51,16 @@
     <p class="small" id="status" role="status"></p>
   </section>
 
+  <section class="card stack" id="bgCard" hidden style="margin-top:14px"><h3>Hintergrund-Test</h3>
+    <p class="small" style="margin:0">Prüft, ob eine Antwort weiterläuft, während Tend im Hintergrund ist. Starte, warte auf den ersten Text, dann wechsle für mindestens 30 Sekunden weg und komm zurück.</p>
+    <div class="row"><label class="check"><input type="radio" name="bgMode" value="app" checked><span>Andere App öffnen</span></label><label class="check"><input type="radio" name="bgMode" value="screen"><span>Bildschirm ausschalten</span></label></div>
+    <label class="check"><input type="checkbox" id="bgNotify" checked><span>Mitteilung schicken, wenn die Antwort fertig ist</span></label>
+    <button class="btn" id="bgBtn">Hintergrund-Test starten</button>
+    <p class="small" id="bgStatus" role="status"></p>
+    <div id="bgResults"></div>
+    <button class="btn ghost" id="bgShare" hidden>Ergebnisse teilen</button>
+  </section>
+
   <section id="summary" style="margin-top:14px"></section>
   <section id="results"></section>
 

@@ -4,6 +4,7 @@ import { CreateWebWorkerMLCEngine, hasModelInCache, deleteModelAllInfoInCache } 
 import { FLOW_SYSTEM, CLOSE_SYSTEM, parseClose } from '../reflect.js';
 import { checkCrisis, withHelp } from '../crisis.js';
 import { CASES } from './cases.js';
+import { analyzeBackground, VERDICT_TEXT } from './bg.js';
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -17,7 +18,7 @@ const MODELS = [
   { name: 'Gemma 3 1B', note: 'Am kleinsten, Untergrenze', f16: 'gemma3-1b-it-q4f16_1-MLC', vram: [711] },
 ];
 
-const state = { device: {}, model: null, engine: null, results: [], running: false, stop: false, battery0: null, loadMs: 0 };
+const state = { device: {}, model: null, engine: null, results: [], background: [], running: false, stop: false, battery0: null, loadMs: 0 };
 
 /* ---------- Gerät prüfen ---------- */
 async function checkDevice() {
@@ -93,6 +94,7 @@ async function loadModel() {
     state.model = { ...m, id };
     $('#progressText').textContent = `${m.name} ist bereit (geladen in ${Math.round(state.loadMs / 1000)} s).`;
     $('#runCard').hidden = false;
+    $('#bgCard').hidden = false;
   } catch (err) {
     $('#progressText').textContent = `Laden fehlgeschlagen: ${err?.message || String(err)}. Häufige Ursache: zu wenig Grafikspeicher. Versuche ein kleineres Modell.`;
   }
@@ -258,17 +260,80 @@ function summary() {
 }
 
 function report() {
-  return JSON.stringify({ app: 'tend-lab', version: 1, at: new Date().toISOString(), model: state.model?.id, loadMs: Math.round(state.loadMs), device: state.device, battery: state.battery, results: state.results }, null, 1);
+  return JSON.stringify({ app: 'tend-lab', version: 1, at: new Date().toISOString(), model: state.model?.id, loadMs: Math.round(state.loadMs), device: state.device, battery: state.battery, results: state.results, background: state.background }, null, 1);
 }
 
 async function share() {
   const text = report();
-  const file = new File([text], `tend-labor-${state.model.id}.json`, { type: 'application/json' });
+  const file = new File([text], `tend-labor-${state.model?.id || 'test'}.json`, { type: 'application/json' });
   try {
     if (navigator.canShare?.({ files: [file] })) return await navigator.share({ files: [file], title: 'Tend-Labor' });
   } catch (err) { if (err.name === 'AbortError') return; }
   await navigator.clipboard.writeText(text);
   $('#shareBtn').textContent = 'In die Zwischenablage kopiert';
+}
+
+/* ---------- Hintergrund-Test ---------- */
+// Eine bewusst lange Antwort; währenddessen wechselt man weg. Ohne Wake Lock, damit der Bildschirm normal ausgehen darf.
+async function backgroundTest() {
+  if (state.running) return;
+  const mode = $('input[name=bgMode]:checked').value;
+  const notify = $('#bgNotify').checked;
+  if (notify && 'Notification' in window && Notification.permission === 'default') await Notification.requestPermission().catch(() => {});
+  state.running = true;
+  $('#bgBtn').disabled = true;
+  $('#runBtns').hidden = true;
+  const t0 = performance.now();
+  const now = () => Math.round(performance.now() - t0);
+  const events = [];
+  const tokens = [];
+  const on = {
+    visibilitychange: () => events.push({ t: now(), type: document.hidden ? 'hidden' : 'visible' }),
+    freeze: () => events.push({ t: now(), type: 'freeze' }),
+    resume: () => events.push({ t: now(), type: 'resume' }),
+  };
+  Object.entries(on).forEach(([k, f]) => document.addEventListener(k, f));
+  const opts = { stream: true, temperature: 0.7, max_tokens: 260 };
+  if (state.model.think) opts.extra_body = { enable_thinking: false };
+  const messages = [{ role: 'system', content: 'Du schreibst ruhige, ausführliche Texte auf Deutsch.' }, { role: 'user', content: 'Schreibe eine ruhige Betrachtung über einen Spaziergang im Herbst, in etwa zwölf Sätzen.' }];
+  let completed = false;
+  let error = null;
+  $('#bgStatus').textContent = 'Startet… Sobald hier Text erscheint, wechsle für mindestens 30 Sekunden weg.';
+  try {
+    for await (const chunk of await state.engine.chat.completions.create({ ...opts, messages })) {
+      if (chunk.choices?.[0]?.delta?.content) {
+        tokens.push(now());
+        $('#bgStatus').textContent = tokens.length === 1
+          ? (mode === 'screen' ? 'Läuft. Schalte jetzt den Bildschirm für mindestens 30 Sekunden aus.' : 'Läuft. Wechsle jetzt für mindestens 30 Sekunden in eine andere App.')
+          : `Läuft… ${tokens.length} Textstücke.`;
+      }
+    }
+    completed = true;
+  } catch (err) {
+    error = err?.message || String(err);
+  }
+  const end = now();
+  Object.entries(on).forEach(([k, f]) => document.removeEventListener(k, f));
+  await state.engine.resetChat().catch(() => {});
+  let notified = null;
+  if (notify && document.hidden) {
+    try {
+      const reg = await navigator.serviceWorker?.getRegistration();
+      if (Notification.permission !== 'granted') notified = 'nicht erlaubt';
+      else if (reg) { await reg.showNotification('Tend-Labor', { body: 'Die Testantwort ist fertig.', tag: 'tend-lab' }); notified = true; }
+      else { new Notification('Tend-Labor', { body: 'Die Testantwort ist fertig.' }); notified = true; }
+    } catch (err) { notified = `Fehler: ${err?.message || err}`; }
+  }
+  const a = analyzeBackground({ events, tokens, end, completed, error });
+  state.background.push({ mode, model: state.model.id, ...a, completed, error, notified, events });
+  $('#bgResults').insertAdjacentHTML('beforeend', `<div class="case"><h3>${mode === 'screen' ? 'Bildschirm aus' : 'Andere App'}: ${esc(a.verdict)}</h3>
+    <p>${esc(VERDICT_TEXT[a.verdict])}</p>
+    <p class="small soft">Im Hintergrund ${a.hiddenSec} s · dabei ${a.tokensWhileHidden} von etwa ${a.expectedWhileHidden} erwarteten Textstücken · Schwall nach Rückkehr ${a.burstAfterReturn} · längste Pause ${a.longestGapSec} s · gesamt ${a.totalSec} s${error ? ` · Fehler: ${esc(error)}` : ''}${notified === null ? '' : ` · Mitteilung: ${notified === true ? 'gesendet' : esc(notified)}`}</p></div>`);
+  $('#bgStatus').textContent = 'Fertig. Wiederhole den Test gern mit der anderen Variante.';
+  $('#bgBtn').disabled = false;
+  $('#runBtns').hidden = false;
+  $('#bgShare').hidden = false;
+  state.running = false;
 }
 
 /* ---------- Bedienung ---------- */
@@ -277,6 +342,8 @@ document.addEventListener('click', async (ev) => {
   if (t.id === 'loadBtn') loadModel();
   if (t.id === 'quickBtn') runTests(true);
   if (t.id === 'fullBtn') runTests(false);
+  if (t.id === 'bgBtn') backgroundTest();
+  if (t.id === 'bgShare') share();
   if (t.id === 'stopBtn') { state.stop = true; $('#status').textContent = 'Wird nach diesem Fall abgebrochen…'; }
   if (t.id === 'clearBtn') {
     for (const m of MODELS) for (const id of [m.f16, m.f32].filter(Boolean)) await deleteModelAllInfoInCache(id).catch(() => {});
