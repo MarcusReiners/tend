@@ -23,7 +23,8 @@ Was sich verändert hat – Fortschritte oder Auffälliges
 Offenes aus der letzten Stunde – falls angegeben
 Keine Ratschläge, keine Diagnosen. Sachlich und warm, höchstens 250 Wörter.`;
 
-export function parseClose(text) {
+export function parseClose(raw) {
+  const text = raw.replace(/\*\*|__/g, ''); // Manche Modelle setzen die Stichwörter fett: **ABSCHLUSS:**
   const grab = (label) => {
     const m = new RegExp(`${label}:\\s*([\\s\\S]*?)(?=\\n\\s*(?:ABSCHLUSS|ERKENNTNIS|SCHRITT|THEMEN):|$)`, 'i').exec(text);
     return m ? m[1].trim() : '';
