@@ -274,6 +274,25 @@ async function share() {
 }
 
 /* ---------- Hintergrund-Test ---------- */
+// Schließt Android die Seite im Hintergrund, ist danach alles weg. Deshalb merkt sich die Seite laufend den Stand.
+const MARK = 'tend-lab-bg';
+const mark = (data) => { try { localStorage.setItem(MARK, JSON.stringify({ ...JSON.parse(localStorage.getItem(MARK) || '{}'), ...data })); } catch { /* ohne Speicher keine Erkennung */ } };
+const unmark = () => { try { localStorage.removeItem(MARK); } catch { /* nichts zu tun */ } };
+
+function interruptedRun() {
+  let m = null;
+  try { m = JSON.parse(localStorage.getItem(MARK) || 'null'); } catch { m = null; }
+  if (!m) return;
+  unmark();
+  const hiddenFor = m.hiddenAt ? Math.round((Date.now() - m.hiddenAt) / 1000) : null;
+  const entry = { mode: m.mode, model: m.model, verdict: 'Seite geschlossen', tokensBeforeHide: m.tokensAtHide ?? null, tokensTotal: m.tokens ?? 0, secondsUntilHide: m.hiddenAt ? Math.round((m.hiddenAt - m.start) / 1000) : null, reopenedAfterSec: hiddenFor, deviceMemoryGB: navigator.deviceMemory ?? null };
+  state.background.push(entry);
+  $('#interrupted').hidden = false;
+  $('#interrupted').innerHTML = `<h3>Letzter Hintergrund-Test: Seite geschlossen</h3>
+    <p>Während Tend im Hintergrund war, hat Android die Seite geschlossen und das Modell aus dem Speicher geworfen. Vorher kamen ${entry.tokensTotal} Textstücke an${hiddenFor !== null ? `, du warst etwa ${hiddenFor} s weg` : ''}.</p>
+    <p class="small soft">Das heißt: Mit diesem Modell läuft im Hintergrund nichts weiter. Ein kleineres Modell braucht weniger Speicher und wird vielleicht nicht geschlossen.</p>
+    <button class="btn ghost" id="bgShare2">Ergebnis teilen</button>`;
+}
 // Eine bewusst lange Antwort; währenddessen wechselt man weg. Ohne Wake Lock, damit der Bildschirm normal ausgehen darf.
 async function backgroundTest() {
   if (state.running) return;
@@ -299,10 +318,14 @@ async function backgroundTest() {
   let completed = false;
   let error = null;
   $('#bgStatus').textContent = 'Startet… Sobald hier Text erscheint, wechsle für mindestens 30 Sekunden weg.';
+  mark({ start: Date.now(), mode, model: state.model.id, tokens: 0 });
+  const onHidden = () => { if (document.hidden) mark({ hiddenAt: Date.now(), tokensAtHide: tokens.length }); };
+  document.addEventListener('visibilitychange', onHidden);
   try {
     for await (const chunk of await state.engine.chat.completions.create({ ...opts, messages })) {
       if (chunk.choices?.[0]?.delta?.content) {
         tokens.push(now());
+        if (tokens.length % 5 === 0) mark({ tokens: tokens.length });
         $('#bgStatus').textContent = tokens.length === 1
           ? (mode === 'screen' ? 'Läuft. Schalte jetzt den Bildschirm für mindestens 30 Sekunden aus.' : 'Läuft. Wechsle jetzt für mindestens 30 Sekunden in eine andere App.')
           : `Läuft… ${tokens.length} Textstücke.`;
@@ -314,6 +337,8 @@ async function backgroundTest() {
   }
   const end = now();
   Object.entries(on).forEach(([k, f]) => document.removeEventListener(k, f));
+  document.removeEventListener('visibilitychange', onHidden);
+  unmark();
   await state.engine.resetChat().catch(() => {});
   let notified = null;
   if (notify && document.hidden) {
@@ -343,7 +368,7 @@ document.addEventListener('click', async (ev) => {
   if (t.id === 'quickBtn') runTests(true);
   if (t.id === 'fullBtn') runTests(false);
   if (t.id === 'bgBtn') backgroundTest();
-  if (t.id === 'bgShare') share();
+  if (t.id === 'bgShare' || t.id === 'bgShare2') share();
   if (t.id === 'stopBtn') { state.stop = true; $('#status').textContent = 'Wird nach diesem Fall abgebrochen…'; }
   if (t.id === 'clearBtn') {
     for (const m of MODELS) for (const id of [m.f16, m.f32].filter(Boolean)) await deleteModelAllInfoInCache(id).catch(() => {});
@@ -358,4 +383,5 @@ document.addEventListener('click', async (ev) => {
   }
 });
 
+interruptedRun();
 checkDevice();
