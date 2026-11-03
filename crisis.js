@@ -18,8 +18,13 @@ const PATTERNS = [
   // Selbstverletzung und Mittel
   /ritzen/, /geritzt/, /ritze mich/, /selbstverletz/, /mir (et)?was antun/, /mir weh ?tun/, /mir (die|den) (pulsadern|arme?) /, /ueberdosis/, /abschiedsbrief/,
   /mich (auf|er)haengen/, /vor (den|einen) zug/, /von (der|einer) bruecke/, /vom dach spring/,
+  // Vorbereitung: Tabletten sammeln oder alle auf einmal nehmen. Oft ohne ein einziges Wort über Tod oder Sterben.
+  /(tabletten|pillen|medikamente|schlafmittel)\w* .{0,30}(sammeln|gesammelt|horten|gehortet|bunkern|gebunkert)/,
+  /(sammle|sammeln|gesammelt|horte|horten|gehortet|bunkere|bunkern|gebunkert) .{0,30}(tabletten|pillen|medikamente|schlafmittel)/,
+  /(alle|ganze[nr]? (packung|schachtel|dose)) .{0,25}(tabletten|pillen|medikamente|schlafmittel)\w* .{0,15}(auf einmal|auf einen schlag|schlucken|geschluckt)/,
   // Englisch
   /kill myself/, /end my life/, /want to die/, /wish i (was|were) dead/, /self[- ]?harm/, /better off without me/, /no reason to live/, /(not|never) wake up/, /don'?t want to (be here|live)/,
+  /(stockpil|hoard|saving up|collecting)\w* .{0,20}(pills|meds|medication|tablets)/, /(all|whole bottle of) .{0,15}(pills|meds|tablets) at once/,
 ];
 
 const normalize = (text) => (text || '').toLowerCase().replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss').replace(/\s+/g, ' ');
