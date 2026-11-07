@@ -133,24 +133,38 @@ const PICK = {
   ollama: (j) => j.message?.content || '',
 };
 
-function parseLine(line, pick) {
+// Hat der Dienst aufgehört, weil das Längenlimit erreicht war? Dann endet der Text mitten im Satz.
+const CUT = {
+  gemini: (j) => j.candidates?.[0]?.finishReason === 'MAX_TOKENS',
+  anthropic: (j) => j.delta?.stop_reason === 'max_tokens',
+  openai: (j) => j.choices?.[0]?.finish_reason === 'length',
+  ollama: (j) => j.done_reason === 'length',
+};
+
+// Abgeschnittene Antworten enden am letzten ganzen Satz statt mitten im Wort.
+function wholeSentences(text) {
+  const m = /^[\s\S]*[.!?…][»«“”"')\]]*(?=\s|$)/.exec(text.trim());
+  return m ? m[0] : `${text.trim()}…`;
+}
+
+function parseLine(line) {
   const data = line.startsWith('data:') ? line.slice(5).trim() : line;
-  if (!data || data === '[DONE]' || !/^[{[]/.test(data)) return '';
+  if (!data || data === '[DONE]' || !/^[{[]/.test(data)) return null;
   let j;
   try {
     j = JSON.parse(data);
   } catch {
-    return '';
+    return null;
   }
   // Fehler können auch mitten im Datenstrom kommen, obwohl die Antwort mit Status 200 begann.
   if (j.error || j.type === 'error') {
     const code = Number(j.error?.code) || (j.error?.type === 'overloaded_error' ? 503 : 500);
     throw new Error(`${code} ${data.slice(0, 1500)}`);
   }
-  return pick(j) || '';
+  return j;
 }
 
-async function streamPost(url, headers, body, pick, { onText, firstMs = TIMING.first, retries = 1 } = {}) {
+async function streamPost(url, headers, body, kind, { onText, firstMs = TIMING.first, retries = 1 } = {}) {
   const ctl = new AbortController();
   let timer;
   let stalled = false;
@@ -166,7 +180,7 @@ async function streamPost(url, headers, body, pick, { onText, firstMs = TIMING.f
       if (retries > 0 && isOverload(err)) {
         clearTimeout(timer);
         await new Promise((r) => { setTimeout(r, TIMING.retry); });
-        return await streamPost(url, headers, body, pick, { onText, firstMs, retries: retries - 1 });
+        return await streamPost(url, headers, body, kind, { onText, firstMs, retries: retries - 1 });
       }
       throw err;
     }
@@ -174,8 +188,12 @@ async function streamPost(url, headers, body, pick, { onText, firstMs = TIMING.f
     let buf = '';
     let all = '';
     let text = '';
+    let cut = false;
     const take = (line) => {
-      const part = parseLine(line.trim(), pick);
+      const j = parseLine(line.trim());
+      if (!j) return;
+      if (CUT[kind](j)) cut = true;
+      const part = PICK[kind](j) || '';
       if (part) { text += part; onText?.(text); }
     };
     for (;;) {
@@ -192,9 +210,13 @@ async function streamPost(url, headers, body, pick, { onText, firstMs = TIMING.f
     }
     take(buf);
     if (!text) { // Anbieter ohne Datenstrom schicken alles als ein JSON-Objekt, oft über mehrere Zeilen.
-      try { text = pick(JSON.parse(all)) || ''; } catch { /* Bleibt leer und wird unten gemeldet */ }
+      try {
+        const j = JSON.parse(all);
+        text = PICK[kind](j) || '';
+        cut = CUT[kind](j);
+      } catch { /* Bleibt leer und wird unten gemeldet */ }
     }
-    return text.trim();
+    return cut && text.trim() ? wholeSentences(text) : text.trim();
   } catch (e) {
     if (stalled) {
       const err = new Error(STALL);
@@ -250,21 +272,23 @@ export async function askCompanion(cfg, messages, opts = {}) {
       'x-api-key': cfg.apiKey,
       'anthropic-version': '2023-06-01',
       'anthropic-dangerous-direct-browser-access': 'true',
-    }, { model: cfg.model, max_tokens: maxTokens, system, messages, stream: true }, PICK.anthropic, { onText }));
+    }, { model: cfg.model, max_tokens: maxTokens, system, messages, stream: true }, 'anthropic', { onText }));
   }
   if (isGemini(cfg)) {
     const headers = await geminiHeaders(cfg);
     const body = {
       systemInstruction: { parts: [{ text: system }] },
       contents: messages.map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })),
-      generationConfig: { maxOutputTokens: Math.max(1024, maxTokens * 2) },
+      // Gemini denkt vor dem Antworten, und diese Denk-Token zählen mit zum Limit. Mit einem knappen Limit
+      // war es oft mitten im Satz aufgebraucht. Wie lang die sichtbare Antwort wird, regelt die Anweisung.
+      generationConfig: { maxOutputTokens: 8192 },
     };
     let firstErr;
     const models = [cfg.model, ...(cfg.fallbackModels || [])].slice(0, 3); // Begrenzt die Wartezeit im schlimmsten Fall
     for (const [i, model] of models.entries()) { // Ist ein Modell überlastet oder stockt es, springt ein anderes ein.
       try {
         if (i) onText?.(''); // Angefangenen Text des Vorgängers verwerfen
-        return orEmpty(await streamPost(`${base}/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`, headers, body, PICK.gemini, { onText, firstMs: i ? TIMING.fallback : TIMING.first }));
+        return orEmpty(await streamPost(`${base}/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`, headers, body, 'gemini', { onText, firstMs: i ? TIMING.fallback : TIMING.first }));
       } catch (err) {
         firstErr ||= err;
         if (!err.stalled && !isOverload(err) && !/^404 /.test(String(err.message))) throw err;
@@ -274,17 +298,17 @@ export async function askCompanion(cfg, messages, opts = {}) {
   }
   if (cfg.provider === 'openai' || cfg.provider === 'mistral') {
     return orEmpty(await streamPost(`${base}/chat/completions`, { authorization: `Bearer ${cfg.apiKey}` },
-      { model: cfg.model, max_tokens: maxTokens, stream: true, messages: [{ role: 'system', content: system }, ...messages] }, PICK.openai, { onText }));
+      { model: cfg.model, max_tokens: maxTokens, stream: true, messages: [{ role: 'system', content: system }, ...messages] }, 'openai', { onText }));
   }
   if (cfg.provider === 'ollama') {
     // Ohne Denkphase antworten lokale Modelle in Sekunden statt Minuten, auf 16 GB gemessen. Nicht jedes Modell kennt die Option.
     const body = { model: cfg.model, stream: true, messages: [{ role: 'system', content: system }, ...messages] };
     try {
-      return orEmpty(await streamPost(`${base}/api/chat`, {}, { ...body, think: false }, PICK.ollama, { onText }));
+      return orEmpty(await streamPost(`${base}/api/chat`, {}, { ...body, think: false }, 'ollama', { onText }));
     } catch (err) {
       if (err instanceof TypeError) throw new Error('Ollama ist nicht erreichbar. Prüfe, ob es läuft und ob dein Browser den Zugriff auf dieses Gerät erlaubt.');
       if (!/^400 .*think/i.test(String(err.message))) throw err;
-      return orEmpty(await streamPost(`${base}/api/chat`, {}, body, PICK.ollama, { onText }));
+      return orEmpty(await streamPost(`${base}/api/chat`, {}, body, 'ollama', { onText }));
     }
   }
   throw new Error('Keine Begleitung eingerichtet.');
